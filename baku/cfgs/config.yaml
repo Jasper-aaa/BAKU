@@ -28,7 +28,7 @@ use_actions: false
 prompt: text # text, goal, intermediate_goal
 eval: false
 experiment: train
-experiment_label: 10_history
+experiment_label: libero_10_baseline
 
 # action chunking
 temporal_agg: true # aggregate actions over time
