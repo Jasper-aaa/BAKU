@@ -6,7 +6,7 @@ defaults:
   - override hydra/launcher: submitit_local
 
 # Root Dir
-root_dir: /path/to/repo/BAKU
+root_dir: /home/yeyifan/workplace/embodied/BAKU
 
 # misc
 seed: 2
@@ -28,7 +28,7 @@ use_actions: false
 prompt: text # text, goal, intermediate_goal
 eval: false
 experiment: train
-experiment_label: ${policy_head}
+experiment_label: 10_history
 
 # action chunking
 temporal_agg: true # aggregate actions over time
@@ -43,7 +43,7 @@ bc_weight: null
 
 hydra:
   run:
-    dir: ./exp_local/${now:%Y.%m.%d}_${experiment}/${experiment_label}/${now:%H%M%S}_hidden_dim_${suite.hidden_dim}
+    dir: /home/data/yeyifan/memory/
   sweep:
     dir: ./exp_local/${now:%Y.%m.%d}/${now:%H%M%S}
     subdir: ${hydra.job.num}
