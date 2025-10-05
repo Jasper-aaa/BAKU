@@ -1,0 +1,35 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "train.py (baku libero_10)",
+      "type": "python",
+      "request": "launch",
+      "program": "/home/yifan/workplace/BAKU/baku/train.py",
+      "args": [
+        "agent=baku",
+        "suite=libero",
+        "dataloader=libero",
+        "suite/task=libero_10",
+        "suite.hidden_dim=256"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "train.py (mbaku libero_10)",
+      "type": "python",
+      "request": "launch",
+      "program": "/home/yifan/workplace/BAKU/baku/train.py",
+      "args": [
+        "agent=mbaku",
+        "suite=libero",
+        "dataloader=libero",
+        "suite/task=libero_10",
+        "suite.hidden_dim=256"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    }
+  ]
+}

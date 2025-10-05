@@ -1,4 +1,4 @@
-name: baku
+name: memory
 channels:
   - defaults
 dependencies:

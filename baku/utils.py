@@ -44,6 +44,8 @@ def soft_update_params(net, target_net, tau):
 #     return tuple(torch.as_tensor(x, device=device) for x in xs)
 def to_torch(xs, device):
     for key, value in xs.items():
+        if key == "image_history":
+            continue
         xs[key] = torch.as_tensor(value, device=device)
     return xs
 

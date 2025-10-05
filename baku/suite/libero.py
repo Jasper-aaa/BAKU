@@ -16,7 +16,7 @@ from libero.libero.envs import OffScreenRenderEnv
 
 from sentence_transformers import SentenceTransformer
 
-sentence_encoder = SentenceTransformer("/home/public_data/libero/pretrained_model/all-MiniLM-L6-v2")
+sentence_encoder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 
 
 class RGBArrayAsObservationWrapper(dm_env.Environment):

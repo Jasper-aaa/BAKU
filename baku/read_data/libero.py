@@ -5,8 +5,200 @@ from pathlib import Path
 
 import torch
 import torchvision.transforms as transforms
-from torch.utils.data import IterableDataset
+from torch.utils.data import Dataset,IterableDataset
 
+class VideoDataset(Dataset):
+    def __init__(
+    self,
+    path,
+    suite,
+    scenes,
+    tasks,
+    num_demos_per_task,
+    obs_type,
+    history,
+    history_len,
+    prompt,
+    temporal_agg,
+    num_queries,
+    img_size,
+    intermediate_goal_step=50,
+    store_actions=False,
+):
+        self._obs_type = obs_type
+        self._prompt = prompt
+        self._history = history
+        self._history_len = history_len if history else 1
+        self.img_size = img_size
+        self.intermediate_goal_step = intermediate_goal_step
+
+        # temporal_aggregation
+        self._temporal_agg = temporal_agg
+        self._num_queries = num_queries
+
+        # Convert task_names, which is a list, to a dictionary
+        tasks = {task_name: scene[task_name] for scene in tasks for task_name in scene}
+
+        # Get relevant task names
+        task_name = []
+        for scene in scenes:
+            task_name.extend([task_name for task_name in tasks[scene]])
+
+        # get data paths
+        self._paths = []
+        # for suite in suites:
+        self._paths.extend(list((Path(path) / suite).glob("*")))
+
+        if task_name is not None:
+            paths = {}
+            idx2name = {}
+            for path in self._paths:
+                task = str(path).split(".")[0].split("/")[-1]
+                if task in task_name:
+                    # get idx of task in task_name
+                    idx = task_name.index(task)
+                    paths[idx] = path
+                    idx2name[idx] = task
+            del self._paths
+            self._paths = paths
+
+        # store actions
+        if store_actions:
+            self.actions = []
+
+        # read data
+        self._episodes = {}
+        self._max_episode_len = 0
+        self._max_state_dim = 0
+        self._num_videos = 0
+        for _path_idx in self._paths:
+            print(f"Loading {str(self._paths[_path_idx])}")
+            # read
+            data = pkl.load(open(str(self._paths[_path_idx]), "rb"))
+            observations = (
+                data["observations"] if self._obs_type == "pixels" else data["states"]
+            )
+            actions = data["actions"]
+            task_emb = data["task_emb"]
+
+            self._num_videos += len(actions)
+            # store
+            self._episodes[_path_idx] = []
+            for i in range(min(num_demos_per_task, len(observations))):
+                episode = dict(
+                    observation=observations[i],
+                    action=actions[i],
+                    task_emb=task_emb,
+                )
+                self._episodes[_path_idx].append(episode)
+                self._max_episode_len = max(
+                    self._max_episode_len,
+                    (
+                        len(observations[i])
+                        if not isinstance(observations[i], dict)
+                        else len(observations[i]["pixels"])
+                    ),
+                )
+                # if obs_type == 'features':
+                self._max_state_dim = max(
+                    self._max_state_dim, data["states"][i].shape[-1]
+                )
+                # self._num_samples += (
+                #     len(observations[i])
+                #     if self._obs_type == "features"
+                #     else len(observations[i]["pixels"])
+                # )
+               
+
+                # store actions
+                if store_actions:
+                    self.actions.append(actions[i])
+
+        
+        self.stats = {
+            "actions": {
+                "min": 0,
+                "max": 1,
+            },
+            "proprioceptive": {
+                "min": 0,
+                "max": 1,
+            },
+        }
+        self.preprocess = {
+            "actions": lambda x: (x - self.stats["actions"]["min"])
+            / (self.stats["actions"]["max"] - self.stats["actions"]["min"] + 1e-5),
+            "proprioceptive": lambda x: (x - self.stats["proprioceptive"]["min"])
+            / (
+                self.stats["proprioceptive"]["max"]
+                - self.stats["proprioceptive"]["min"]
+                + 1e-5
+            ),
+        }
+
+        # augmentation
+        self.aug = transforms.Compose(
+            [
+                transforms.ToPILImage(),
+                transforms.CenterCrop(224),
+                transforms.ToTensor(),
+            ]
+        )
+
+        # Samples from envs
+        self.envs_till_idx = len(self._episodes)
+    
+    def _sample_episode(self, env_idx=None):
+        idx = random.randint(0, self.envs_till_idx - 1) if env_idx is None else env_idx
+        episode = random.choice(self._episodes[idx])
+        return (episode, idx) if env_idx is None else episode
+    
+    def _sample_video(self,vid_id):
+        # sample video according to the frames 
+        episode,episode_id = self._sample_episode()
+
+        observations = episode['obsevations'][vid_id]
+        episode_len = len(observations['pixels'])
+        
+        agent_frames = torch.stack(
+            [
+               self.aug(observations['pixels'][i]) for i in range(episode_len)
+             ]
+        ) # ndarray len,128,128,3
+        
+        wrist_frames = torch.stack(
+            [
+               self.aug(observations['pixels_egocentric'][i]) for i in range(episode_len)
+             ]
+        ) # ndarray len,128,128,3
+        wrist_frames = observations['pixels_egocentric']
+
+        robot_states = np.concatenate([
+            observations['joint_states'],
+            observations["gripper_states"]
+            ],
+            axis = -1,
+        )
+
+        actions = episode['action'][vid_id]
+        task_emb = episode['task_emb']
+
+
+        return {
+            'episode_id': episode_id,
+            'video_id': vid_id,
+            'agent_frames': agent_frames, # video
+            'wrist_frames': wrist_frames, # video
+            'robot_states': self.preprocess["proprioceptive"](robot_states),
+            'actions': self.preprocess["actions"](actions),
+            'task_emb': task_emb,
+        }
+    
+    def __len__(self):
+        return len(self._num_videos)
+    
+    def __getitem__(self,vid_id):
+        return self._sample_video(vid_id=vid_id)
 
 class BCDataset(IterableDataset):
     def __init__(

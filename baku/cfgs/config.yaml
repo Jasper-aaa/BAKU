@@ -6,7 +6,7 @@ defaults:
   - override hydra/launcher: submitit_local
 
 # Root Dir
-root_dir: /home/yeyifan/workplace/embodied/BAKU
+root_dir: /home/yifan/workplace/BAKU
 
 # misc
 seed: 2
@@ -43,7 +43,7 @@ bc_weight: null
 
 hydra:
   run:
-    dir: /home/data/yeyifan/memory/${experiment_label}/
+    dir: /home/yifan/workplace/data/baku_result/${experiment_label}/${now:%Y.%m.%d}
   sweep:
     dir: ./exp_local/${now:%Y.%m.%d}/${now:%H%M%S}
     subdir: ${hydra.job.num}

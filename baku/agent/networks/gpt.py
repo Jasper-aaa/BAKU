@@ -142,6 +142,29 @@ class Block(nn.Module):
         x = x + self.mlp(self.ln_2(x))
         return x
 
+class TokenMergingBlock(nn.Module):
+    def __init__(self,config):
+        super().__init__()
+        self.ln_1 = nn.LayerNorm(config.n_embd)
+        self.attn = CausalSelfAttention(config)
+        self.ln_2 = nn.LayerNorm(config.n_embd)
+        self.mlp = MLP(config)
+        # self.learnable_mask = 
+
+    def forward(self, x):
+        x = x + self.attn(self.ln_1(x))
+        x = x + self.mlp(self.ln_2(x))
+        return x
+
+@dataclass
+class GPTMergingConfig:
+    block_size: int = 1024
+    input_dim: int = 256
+    output_dim: int = 256
+    n_layer: int = 12
+    n_head: int = 12
+    n_embd: int = 768
+    dropout: float = 0.1
 
 @dataclass
 class GPTConfig:

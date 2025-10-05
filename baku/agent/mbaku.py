@@ -11,16 +11,40 @@ import utils
 from agent.networks.rgb_modules import BaseEncoder, ResnetEncoder
 from agent.networks.policy_head import (
     DeterministicHead,
-    GMMHead,
-    BeTHead,
-    VQBeTHead,
-    DiffusionHead,
+
 )
 from agent.networks.gpt import GPT, GPTConfig
 from agent.networks.mlp import MLP
 from agent.networks.kmeans_discretizer import KMeansDiscretizer
 
-class Actor(nn.Module):
+class TemporalEmbedding(nn.Module):
+    def __init__(self, hidden_dim: int):
+        super().__init__()
+        max_frames = 570 # Libero Task Max Frames
+        self.temporal_embed = nn.Embedding(max_frames, hidden_dim)
+
+    def forward(self, x, frame_indices):
+        """
+        x: (B, T, D)
+        frame_indices: (B, T)
+        """
+        B, T, D = x.shape
+        device = x.device
+
+        frame_indices.to(device)
+        _, L = frame_indices.shape
+        
+        assert  T % L == 0, f"Adjust The input modaility in Dataset. Make sure they has same length"
+        num_modality = T // L
+
+        t_embed = self.temporal_embed(frame_indices)   # (B, T, D)
+        t = t_embed.unsqueeze(2).repeat(1, 1, num_modality, 1)   # (B, L, num_modality, D)
+        t = t.transpose(1, 2).reshape(B, T, D) 
+
+        return x + t
+    
+
+class MemoryActor(nn.Module):
     def __init__(
         self,
         repr_dim,
@@ -39,11 +63,10 @@ class Actor(nn.Module):
         self._act_dim = act_dim
         self._num_feat_per_step = num_feat_per_step
 
-        self._action_token = nn.Parameter(torch.randn(1, 1, 1, repr_dim))
+        # global action token
+        self._action_token = nn.Parameter(torch.randn(1, 1, repr_dim))
 
-        # GPT model
-        if policy_type == "gpt":
-            self._policy = GPT(
+        self._policy = GPT(
                 GPTConfig(
                     block_size=65,
                     input_dim=repr_dim,
@@ -54,86 +77,31 @@ class Actor(nn.Module):
                     dropout=0.1,
                 )
             )
-        elif policy_type == "mlp":
-            self._policy = nn.Sequential(
-                nn.Linear(repr_dim, hidden_dim),
-                nn.ReLU(inplace=True),
-                nn.Linear(hidden_dim, hidden_dim),
-                nn.ReLU(inplace=True),
-            )
 
-        if policy_head == "deterministic":
-            self._action_head = DeterministicHead(
+        self._action_head = DeterministicHead(
                 hidden_dim, self._act_dim, hidden_size=hidden_dim, num_layers=2
-            )
-        elif policy_head == "gmm":
-            self._action_head = GMMHead(
-                hidden_dim, self._act_dim, hidden_size=hidden_dim, num_layers=2
-            )
-        elif policy_head == "bet":
-            self._action_head = BeTHead(
-                hidden_dim,
-                self._act_dim,
-                hidden_size=hidden_dim,
-                num_layers=2,
-            )
-        elif policy_head == "vqbet":
-            self._action_head = VQBeTHead(
-                hidden_dim,
-                self._act_dim,
-                hidden_size=hidden_dim,
-                device=device,
-            )
-        elif policy_head == "diffusion":
-            self._action_head = DiffusionHead(
-                input_size=hidden_dim,
-                output_size=self._act_dim,
-                obs_horizon=10,  # 3 (dmc - diffusion)
-                pred_horizon=10,  # 3 (dmc - diffusion)
-                hidden_size=hidden_dim,
-                num_layers=2,
-                device=device,
             )
 
         self.apply(utils.weight_init)
-
-    def forward(self, obs, num_prompt_feats, stddev, action=None, cluster_centers=None):
+        self.temp_emb = TemporalEmbedding(hidden_dim=repr_dim)
+    
+    def forward(self, obs, num_prompt_feats, stddev, action=None, time_index=None, cluster_centers=None):
         B, T, D = obs.shape
-        if self._policy_type == "mlp":
-            if T * D < self._repr_dim:
-                gt_num_time_steps = (
-                    self._repr_dim // D - num_prompt_feats
-                ) // self._num_feat_per_step
-                num_repeat = (
-                    gt_num_time_steps
-                    - (T - num_prompt_feats) // self._num_feat_per_step
-                )
-                initial_obs = obs[
-                    :, num_prompt_feats : num_prompt_feats + self._num_feat_per_step
-                ]
-                initial_obs = initial_obs.repeat(1, num_repeat, 1)
-                obs = torch.cat(
-                    [obs[:, :num_prompt_feats], initial_obs, obs[:, num_prompt_feats:]],
-                    dim=1,
-                )
-                B, T, D = obs.shape
-            obs = obs.view(B, 1, T * D)
-            features = self._policy(obs)
-        elif self._policy_type == "gpt":
-            # insert action token at each self._num_feat_per_step interval
-            prompt = obs[:, :num_prompt_feats]
-            obs = obs[:, num_prompt_feats:]
-            obs = obs.view(B, -1, self._num_feat_per_step, obs.shape[-1])
-            action_token = self._action_token.repeat(B, obs.shape[1], 1, 1)
-            obs = torch.cat([obs, action_token], dim=-2).view(B, -1, D)
-            obs = torch.cat([prompt, obs], dim=1)
 
-            # get action features
-            features = self._policy(obs)
-            features = features[:, num_prompt_feats:]
-            num_feat_per_step = self._num_feat_per_step + 1  # +1 for action token
-            features = features[:, num_feat_per_step - 1 :: num_feat_per_step]
+        prompt = obs[:, :num_prompt_feats]
+        obs = obs[:, num_prompt_feats:]
 
+        # add temporal embedding 
+        if time_index is not None:
+            obs = self.temp_emb(obs,time_index)
+            
+        action_token = self._action_token.repeat(B, 1, 1)
+        obs = torch.cat([obs, action_token], dim=1)
+        obs = torch.cat([prompt, obs], dim=1)
+
+        # get action features
+        features = self._policy(obs)
+        features = features[:, -1] # get action token features
         # action head
         pred_action = self._action_head(
             features,
@@ -151,8 +119,6 @@ class Actor(nn.Module):
                 **{"cluster_centers": cluster_centers},
             )
             return pred_action, loss[0] if isinstance(loss, tuple) else loss
-
-
 
 class BCAgent:
     def __init__(
@@ -330,30 +296,15 @@ class BCAgent:
                 if p.requires_grad
             )
 
-        if policy_type == "mlp":
-            repr_mult_factor = len(self.pixel_keys) if obs_type == "pixels" else 1
-            if use_proprio:
-                repr_mult_factor += 1
-            if history:
-                repr_mult_factor *= self.history_len
-            if self.use_language:
-                repr_mult_factor += 1
-        else:
-            repr_mult_factor = 1
 
-        # discretizer (for BeT)
-        if self.policy_head == "bet":
-            nbins = 64
-            niters = 200
-            self.discretizer = KMeansDiscretizer(num_bins=nbins, kmeans_iters=niters)
-        else:
-            self.discretizer = None
+        repr_mult_factor = 1
+
 
         # actor
         action_dim = (
             self._act_dim * self.num_queries if self.temporal_agg else self._act_dim
         )
-        self.actor = Actor(
+        self.actor = MemoryActor(
             self.repr_dim * repr_mult_factor,
             action_dim,
             hidden_dim,
@@ -676,14 +627,23 @@ class BCAgent:
         batch = next(expert_replay_iter)
         data = utils.to_torch(batch, self.device)
         action = data["actions"].float()
-
+        image_len = data["image_len"]
         # lang projection
         if self.use_language:
-            lang_features = (
-                data["task_emb"].float()[:, None].repeat(1, self.history_len, 1)
+            # make sure film layer
+            if image_len is not None:
+                lang_features = (
+                data["task_emb"].float()[:, None].repeat(1, image_len[0].item(), 1)
             )
-            lang_features = self.language_projector(lang_features)
-            lang_features = einops.rearrange(lang_features, "b t d -> (b t) d")
+                lang_features = self.language_projector(lang_features)
+                lang_features = einops.rearrange(lang_features, "b t d -> (b t) d")
+            
+            else:
+                lang_features = (
+                    data["task_emb"].float()[:, None].repeat(1, 1, 1)
+                )
+                lang_features = self.language_projector(lang_features)
+                lang_features = einops.rearrange(lang_features, "b t d -> (b t) d")
         else:
             lang_features = None
 
@@ -696,7 +656,8 @@ class BCAgent:
                 # rearrange
                 pixel = einops.rearrange(pixel, "b t c h w -> (b t) c h w")
                 # augment
-                pixel = self.customAug(pixel / 255.0) if self.norm else pixel                
+                pixel = self.customAug(pixel / 255.0) if self.norm else pixel
+
                 # encode
                 lang = lang_features if self.film else None
                 if self.train_encoder:
@@ -721,15 +682,8 @@ class BCAgent:
             # concatenate
             features = torch.cat(features, dim=-1).view(
                 action.shape[0], -1, self.repr_dim
-            )  # (B, T * num_feat_per_step, D)
-        else:
-            features = data[self.feature_key].float()
-            shape = features.shape
-            if self.train_encoder:
-                features = self.encoder(features)
-            else:
-                with torch.no_grad():
-                    features = self.encoder(features)
+            )  # (B, agent * actuacl_num + wrist * actual_num + T * proprio, D)
+
 
         # prompt
         prompt_features = []
@@ -738,58 +692,6 @@ class BCAgent:
                 lang_features, "(b t) d -> b t d", t=shape[1]
             )
             prompt_features.append(lang_features[:, -1:])
-        if self.prompt not in [None, "text", "one_hot"]:
-            if self.use_language:
-                prompt_lang_features = lang_features[:, -1:]
-                reshape_lang = True
-            else:
-                prompt_lang_features = None
-
-            if self.obs_type == "pixels":
-                for key in self.pixel_keys:
-                    pixel = data[f"prompt_{key}"].float()
-                    shape = pixel.shape
-                    # reshape lang features
-                    if self.use_language and reshape_lang:
-                        prompt_lang_features = prompt_lang_features.repeat(
-                            1, shape[1], 1
-                        )
-                        prompt_lang_features = einops.rearrange(
-                            prompt_lang_features, "b t d -> (b t) d"
-                        )
-                        reshape_lang = False
-                    # rearrange
-                    pixel = einops.rearrange(pixel, "b t c h w -> (b t) c h w")
-                    # augment
-                    pixel = self.customAug(pixel / 255.0) if self.norm else pixel
-                    # encode
-                    if self.train_encoder:
-                        pixel = (
-                            self.encoder[key](pixel, lang=prompt_lang_features)
-                            if self.separate_encoders
-                            else self.encoder(pixel, lang=prompt_lang_features)
-                        )
-                    else:
-                        with torch.no_grad():
-                            pixel = (
-                                self.encoder[key](pixel, lang=prompt_lang_features)
-                                if self.separate_encoders
-                                else self.encoder(pixel, lang=prompt_lang_features)
-                            )
-                    pixel = einops.rearrange(pixel, "(b t) d -> b t d", t=shape[1])
-                    prompt_features.append(pixel)
-                if self.use_proprio:
-                    proprio = data[f"prompt_{self.proprio_key}"].float()
-                    proprio = self.proprio_projector(proprio)
-                    prompt_features.append(proprio)
-            else:
-                prompt_feat = data[f"prompt_{self.feature_key}"].float()
-                if self.train_encoder:
-                    prompt_feat = self.encoder(prompt_feat)
-                else:
-                    with torch.no_grad():
-                        prompt_feat = self.encoder(prompt_feat)
-                prompt_features.append(prompt_feat)
         num_prompt_feats = len(prompt_features) if len(prompt_features) > 0 else 0
         if num_prompt_feats > 0:
             prompt_features = torch.cat(prompt_features, dim=-1).view(
@@ -800,18 +702,17 @@ class BCAgent:
 
         # rearrange action
         if self.temporal_agg:
-            action = einops.rearrange(action, "b t1 t2 d -> b t1 (t2 d)")
+            action = einops.rearrange(action, "b t d -> b (t d)")
 
         # Pass cluster center to actor for bet
         kwargs = {}
-        if self.policy_head == "bet":
-            kwargs["cluster_centers"] = self._cluster_centers
+
 
         if update:
             # actor loss
             stddev = utils.schedule(self.stddev_schedule, step)
             _, actor_loss = self.actor(
-                features, num_prompt_feats, stddev, action, **kwargs
+                features, num_prompt_feats, stddev, action,data['frame_indices'], **kwargs
             )
 
             if self.train_encoder:

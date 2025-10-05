@@ -1,6 +1,6 @@
 bc_dataset:
-  _target_: read_data.libero.BCDataset
-  path: "/home/data/yeyifan/expert_demos/libero"
+  _target_: read_data.mlibero.BCDataset
+  path: "/home/yifan/workplace/data/libero/expert_demo"
   suite: ${suite.task.suite}
   scenes: ${suite.task.scenes}
   tasks: ${suite.task.tasks}
@@ -13,3 +13,4 @@ bc_dataset:
   num_queries: ${num_queries}
   img_size: 128
   store_actions: true
+  his_grid_aug: true
